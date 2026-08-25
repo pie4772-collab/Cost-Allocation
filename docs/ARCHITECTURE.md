@@ -65,7 +65,7 @@ stateDiagram-v2
 stateDiagram-v2
     [*] --> DRAFT
     DRAFT --> PENDING_APPROVAL: 승인 요청
-    PENDING_APPROVAL --> APPROVED: 승인 (100% 검증)
+    PENDING_APPROVAL --> APPROVED: "승인 (100% 검증)"
     PENDING_APPROVAL --> REJECTED: 반려
     APPROVED --> SUPERSEDED: 새 버전 승인
 ```
