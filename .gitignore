@@ -37,3 +37,12 @@ next-env.d.ts
 
 # prisma
 /prisma/migrations/**/migration_lock.toml
+/prisma/local-data.sql
+/prisma/cafe24-import.sql
+/scripts/cafe24-import.sql
+/scripts/cafe24-import-data.mjs
+/scripts/cafe24-import-p*.mjs
+/backups/
+/aispace-upload.tar.gz
+/aispace-upload.zip
+/aispace-stage/
