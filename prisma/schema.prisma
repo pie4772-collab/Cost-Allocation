@@ -1,0 +1,546 @@
+// KBI Group Cost Allocation System - Database Schema
+// PostgreSQL + Prisma ORM (OCI VM / Docker)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Auth & RBAC ───────────────────────────────────────────────
+
+enum RoleName {
+  Admin
+  CostManager
+  AllocationManager
+  Approver
+  BillingManager
+  Auditor
+  Viewer
+}
+
+model User {
+  id           String   @id @default(cuid())
+  supabaseId   String?  @unique @map("supabase_id")
+  email        String   @unique
+  name      String
+  passwordHash String? @map("password_hash")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  roles              UserRole[]
+  monthlyCosts       MonthlyCost[]       @relation("MonthlyCostCreatedBy")
+  allocationProjects AllocationProject[] @relation("ProjectCreatedBy")
+  rateVersions       AllocationRateVersion[] @relation("RateVersionCreatedBy")
+  allocationRuns     AllocationRun[]     @relation("RunCreatedBy")
+  approvalActions    ApprovalAction[]
+  auditLogs          AuditLog[]
+  attachments        Attachment[]
+
+  @@map("users")
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  name        RoleName @unique
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  users UserRole[]
+
+  @@map("roles")
+}
+
+model UserRole {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  roleId    String   @map("role_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+  role Role @relation(fields: [roleId], references: [id])
+
+  @@unique([userId, roleId])
+  @@map("user_roles")
+}
+
+// ─── Master Data ─────────────────────────────────────────────
+
+enum PeriodCadence {
+  SEMI_ANNUAL
+  MONTHLY
+}
+
+enum CompanyType {
+  DOMESTIC
+  OVERSEAS
+}
+
+enum BillingLanguage {
+  KO
+  EN
+}
+
+enum Currency {
+  KRW
+  USD
+  EUR
+  JPY
+  CNY
+}
+
+model Company {
+  id              String          @id @default(cuid())
+  code            String          @unique
+  nameKo          String          @map("name_ko")
+  nameEn          String?         @map("name_en")
+  companyType     CompanyType     @map("company_type")
+  billingLanguage BillingLanguage @default(KO) @map("billing_language")
+  currency        Currency        @default(KRW)
+  contactEmail    String?         @map("contact_email")
+  contactPhone    String?         @map("contact_phone")
+  isActive        Boolean         @default(true) @map("is_active")
+  sortOrder       Int             @default(0) @map("sort_order")
+  createdAt       DateTime        @default(now()) @map("created_at")
+  updatedAt       DateTime        @updatedAt @map("updated_at")
+  deletedAt       DateTime?       @map("deleted_at")
+  createdById     String?         @map("created_by_id")
+
+  addresses              CompanyAddress[]
+  allocationRates        AllocationRate[]
+  allocationDetails      AllocationDetail[]
+  companySummaries       CompanyAllocationSummary[]
+  invoices               Invoice[]
+
+  @@map("companies")
+}
+
+model CompanyAddress {
+  id          String   @id @default(cuid())
+  companyId   String   @map("company_id")
+  addressType String   @default("BILLING") @map("address_type")
+  line1       String
+  line2       String?
+  city        String?
+  state       String?
+  postalCode  String?  @map("postal_code")
+  country     String   @default("KR")
+  isPrimary   Boolean  @default(true) @map("is_primary")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  deletedAt   DateTime? @map("deleted_at")
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@map("company_addresses")
+}
+
+model AccountingPeriod {
+  id        String        @id @default(cuid())
+  year      Int
+  cadence   PeriodCadence @default(SEMI_ANNUAL) @map("cadence")
+  periodKey Int           @map("period_key") // 반기: 1|2, 월별: 1-12
+  half      Int           // 반기 구분 (월별: month<=6 ? 1 : 2)
+  month     Int?          // 월별 프로젝트 시 1-12
+  label     String        // e.g. "2026 H1", "2026년 1월"
+  startDate DateTime      @map("start_date")
+  endDate   DateTime      @map("end_date")
+  isActive  Boolean       @default(true) @map("is_active")
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
+
+  projects AllocationProject[]
+
+  @@unique([year, cadence, periodKey])
+  @@map("accounting_periods")
+}
+
+model CostAccount {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  nameKo      String   @map("name_ko")
+  nameEn      String?  @map("name_en")
+  description String?
+  sortOrder   Int      @default(0) @map("sort_order")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  deletedAt   DateTime? @map("deleted_at")
+
+  monthlyCosts      MonthlyCost[]
+  allocationDetails AllocationDetail[]
+
+  @@map("cost_accounts")
+}
+
+// ─── Cost Input ────────────────────────────────────────────────
+
+enum CostStatus {
+  DRAFT
+  CONFIRMED
+  LOCKED
+}
+
+model MonthlyCost {
+  id            String     @id @default(cuid())
+  projectId     String     @map("project_id")
+  costAccountId String     @map("cost_account_id")
+  month         Int        // 1-12
+  amount        BigInt     // KRW integer
+  status        CostStatus @default(DRAFT)
+  version       Int        @default(1)
+  createdAt     DateTime   @default(now()) @map("created_at")
+  updatedAt     DateTime   @updatedAt @map("updated_at")
+  createdById   String     @map("created_by_id")
+
+  project     AllocationProject @relation(fields: [projectId], references: [id])
+  costAccount CostAccount       @relation(fields: [costAccountId], references: [id])
+  createdBy   User              @relation("MonthlyCostCreatedBy", fields: [createdById], references: [id])
+
+  @@unique([projectId, costAccountId, month, version])
+  @@index([projectId, status])
+  @@map("monthly_costs")
+}
+
+// ─── Allocation Project & Rates ────────────────────────────────
+
+enum ProjectStatus {
+  DRAFT
+  COST_CONFIRMED
+  RATES_APPROVED
+  CALCULATED
+  RECONCILED
+  BILLING_APPROVED
+  CLOSED
+}
+
+model AllocationProject {
+  id                   String        @id @default(cuid())
+  periodId             String        @map("period_id")
+  name                 String
+  status               ProjectStatus @default(DRAFT)
+  markupRate           Decimal       @default(0.05) @map("markup_rate") @db.Decimal(8, 6)
+  strictRateValidation Boolean       @default(true) @map("strict_rate_validation")
+  version              Int           @default(1)
+  notes                String?
+  createdAt  DateTime      @default(now()) @map("created_at")
+  updatedAt  DateTime      @updatedAt @map("updated_at")
+  createdById String       @map("created_by_id")
+
+  period       AccountingPeriod        @relation(fields: [periodId], references: [id])
+  createdBy    User                    @relation("ProjectCreatedBy", fields: [createdById], references: [id])
+  monthlyCosts MonthlyCost[]
+  rateVersions AllocationRateVersion[]
+  runs         AllocationRun[]
+
+  @@unique([periodId, version])
+  @@map("allocation_projects")
+}
+
+enum RateVersionStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  SUPERSEDED
+}
+
+model AllocationRateVersion {
+  id        String            @id @default(cuid())
+  projectId String            @map("project_id")
+  version   Int
+  status    RateVersionStatus @default(DRAFT)
+  totalRate Decimal           @default(0) @map("total_rate") @db.Decimal(18, 12)
+  notes     String?
+  createdAt DateTime          @default(now()) @map("created_at")
+  updatedAt DateTime          @updatedAt @map("updated_at")
+  createdById String          @map("created_by_id")
+  approvedAt DateTime?        @map("approved_at")
+
+  project   AllocationProject @relation(fields: [projectId], references: [id])
+  createdBy User              @relation("RateVersionCreatedBy", fields: [createdById], references: [id])
+  rates     AllocationRate[]
+  runs      AllocationRun[]
+
+  @@unique([projectId, version])
+  @@map("allocation_rate_versions")
+}
+
+model AllocationRate {
+  id            String  @id @default(cuid())
+  rateVersionId String  @map("rate_version_id")
+  companyId     String  @map("company_id")
+  rate          Decimal @db.Decimal(18, 12)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  rateVersion AllocationRateVersion @relation(fields: [rateVersionId], references: [id])
+  company     Company               @relation(fields: [companyId], references: [id])
+
+  @@unique([rateVersionId, companyId])
+  @@map("allocation_rates")
+}
+
+// ─── Allocation Runs & Results ─────────────────────────────────
+
+enum RunStatus {
+  PREVIEW
+  EXECUTED
+  APPROVED
+  SUPERSEDED
+}
+
+enum RunType {
+  PREVIEW
+  FINAL
+}
+
+model AllocationRun {
+  id            String    @id @default(cuid())
+  projectId     String    @map("project_id")
+  rateVersionId String    @map("rate_version_id")
+  runNumber     Int       @map("run_number")
+  runType       RunType   @map("run_type")
+  status        RunStatus @default(PREVIEW)
+  inputSnapshot Json      @map("input_snapshot")
+  checksum      String
+  totalCost     BigInt    @map("total_cost")
+  totalAllocated BigInt   @map("total_allocated")
+  totalMarkup   BigInt    @default(0) @map("total_markup")
+  totalBilling  BigInt    @map("total_billing")
+  roundingDiff  BigInt    @default(0) @map("rounding_diff")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  createdById   String    @map("created_by_id")
+  approvedAt    DateTime? @map("approved_at")
+
+  project      AllocationProject          @relation(fields: [projectId], references: [id])
+  rateVersion  AllocationRateVersion      @relation(fields: [rateVersionId], references: [id])
+  createdBy    User                       @relation("RunCreatedBy", fields: [createdById], references: [id])
+  details      AllocationDetail[]
+  summaries    CompanyAllocationSummary[]
+  invoices     Invoice[]
+  reconciliation ReconciliationResult?
+
+  @@unique([projectId, rateVersionId, runNumber])
+  @@index([projectId, status])
+  @@map("allocation_runs")
+}
+
+model AllocationDetail {
+  id            String @id @default(cuid())
+  runId         String @map("run_id")
+  companyId     String @map("company_id")
+  costAccountId String @map("cost_account_id")
+  accountTotal  BigInt @map("account_total")
+  rate          Decimal @db.Decimal(18, 12)
+  rawAmount     BigInt @map("raw_amount")
+  allocatedAmount BigInt @map("allocated_amount") // ROUNDDOWN to KRW
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  run         AllocationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  company     Company       @relation(fields: [companyId], references: [id])
+  costAccount CostAccount   @relation(fields: [costAccountId], references: [id])
+
+  @@unique([runId, companyId, costAccountId])
+  @@map("allocation_details")
+}
+
+model CompanyAllocationSummary {
+  id               String @id @default(cuid())
+  runId            String @map("run_id")
+  companyId        String @map("company_id")
+  preRoundTotal    BigInt @map("pre_round_total")
+  allocationAmount BigInt @map("allocation_amount") // ROUNDDOWN to 10 KRW
+  markupAmount     BigInt @default(0) @map("markup_amount")
+  billingAmount    BigInt @map("billing_amount")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  run     AllocationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  company Company       @relation(fields: [companyId], references: [id])
+
+  @@unique([runId, companyId])
+  @@map("company_allocation_summaries")
+}
+
+// ─── Invoices ──────────────────────────────────────────────────
+
+enum InvoiceStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  ISSUED
+  CANCELLED
+}
+
+enum InvoiceType {
+  DOMESTIC
+  OVERSEAS
+}
+
+model Invoice {
+  id            String        @id @default(cuid())
+  runId         String        @map("run_id")
+  companyId     String        @map("company_id")
+  invoiceNumber String?       @unique @map("invoice_number")
+  invoiceType   InvoiceType   @map("invoice_type")
+  status        InvoiceStatus @default(DRAFT)
+  issueDate     DateTime?     @map("issue_date")
+  periodLabel   String        @map("period_label")
+  subtotal      BigInt
+  markupAmount  BigInt        @default(0) @map("markup_amount")
+  totalAmount   BigInt        @map("total_amount")
+  billingAddress Json?        @map("billing_address")
+  notes         String?
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  run     AllocationRun @relation(fields: [runId], references: [id])
+  company Company       @relation(fields: [companyId], references: [id])
+  lines   InvoiceLine[]
+
+  @@unique([runId, companyId])
+  @@index([status])
+  @@map("invoices")
+}
+
+model InvoiceLine {
+  id            String @id @default(cuid())
+  invoiceId     String @map("invoice_id")
+  lineNumber    Int    @map("line_number")
+  costAccountId String? @map("cost_account_id")
+  description   String
+  amount        BigInt
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@unique([invoiceId, lineNumber])
+  @@map("invoice_lines")
+}
+
+// ─── Approvals ─────────────────────────────────────────────────
+
+enum ApprovalType {
+  COST_CONFIRMATION
+  RATE_APPROVAL
+  ALLOCATION_APPROVAL
+  INVOICE_APPROVAL
+  INVOICE_ISSUE
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+model ApprovalRequest {
+  id          String         @id @default(cuid())
+  type        ApprovalType
+  status      ApprovalStatus @default(PENDING)
+  entityType  String         @map("entity_type")
+  entityId    String         @map("entity_id")
+  requestedBy String         @map("requested_by")
+  reason      String?
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+
+  actions ApprovalAction[]
+
+  @@index([entityType, entityId])
+  @@index([status])
+  @@map("approval_requests")
+}
+
+model ApprovalAction {
+  id        String         @id @default(cuid())
+  requestId String         @map("request_id")
+  userId    String         @map("user_id")
+  action    ApprovalStatus
+  comment   String?
+  createdAt DateTime       @default(now()) @map("created_at")
+
+  request ApprovalRequest @relation(fields: [requestId], references: [id])
+  user    User            @relation(fields: [userId], references: [id])
+
+  @@map("approval_actions")
+}
+
+// ─── Reconciliation ────────────────────────────────────────────
+
+model ReconciliationResult {
+  id                    String   @id @default(cuid())
+  runId                 String   @unique @map("run_id")
+  totalSourceCost       BigInt   @map("total_source_cost")
+  totalAccountAllocated BigInt   @map("total_account_allocated")
+  accountRoundingDiff   BigInt   @map("account_rounding_diff")
+  totalCompanyAllocated BigInt   @map("total_company_allocated")
+  companyRoundingDiff   BigInt   @map("company_rounding_diff")
+  totalMarkup           BigInt   @map("total_markup")
+  totalBilling          BigInt   @map("total_billing")
+  isBalanced            Boolean  @map("is_balanced")
+  details               Json
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  run AllocationRun @relation(fields: [runId], references: [id])
+
+  @@map("reconciliation_results")
+}
+
+// ─── Audit & Settings ──────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?  @map("user_id")
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id")
+  beforeData Json?    @map("before_data")
+  afterData  Json?    @map("after_data")
+  reason     String?
+  ipAddress  String?  @map("ip_address")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model SystemSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  description String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
+}
+
+model Attachment {
+  id         String   @id @default(cuid())
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id")
+  fileName   String   @map("file_name")
+  filePath   String   @map("file_path")
+  mimeType   String   @map("mime_type")
+  fileSize   Int      @map("file_size")
+  uploadedBy String   @map("uploaded_by")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  uploader User @relation(fields: [uploadedBy], references: [id])
+
+  @@index([entityType, entityId])
+  @@map("attachments")
+}

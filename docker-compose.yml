@@ -1,0 +1,23 @@
+# PostgreSQL + Docker (로컬 / OCI VM 공통)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cost-allocation-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: costapp
+      POSTGRES_PASSWORD: costapp
+      POSTGRES_DB: cost_allocation
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U costapp -d cost_allocation"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
