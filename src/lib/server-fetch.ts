@@ -7,8 +7,12 @@ export async function serverFetch(
   path: string,
   init?: RequestInit
 ): Promise<Response> {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
   const headersList = await headers();
+  const host = headersList.get("x-forwarded-host") ?? headersList.get("host");
+  const proto = headersList.get("x-forwarded-proto") ?? "https";
+  const baseUrl =
+    process.env.NEXT_PUBLIC_APP_URL ??
+    (host ? `${proto}://${host}` : "http://localhost:3000");
   const cookie = headersList.get("cookie");
 
   return fetch(`${baseUrl}${path.startsWith("/") ? path : `/${path}`}`, {
