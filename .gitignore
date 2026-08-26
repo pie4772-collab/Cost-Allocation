@@ -42,6 +42,7 @@ next-env.d.ts
 /scripts/cafe24-import.sql
 /scripts/cafe24-import-data.mjs
 /scripts/cafe24-import-p*.mjs
+/scripts/import-chunk-*.mjs
 /backups/
 /aispace-upload.tar.gz
 /aispace-upload.zip

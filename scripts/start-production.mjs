@@ -1,6 +1,6 @@
 import { spawn } from "child_process";
 import { randomBytes } from "crypto";
-import { existsSync } from "fs";
+import { existsSync, readdirSync, readFileSync } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -30,15 +30,24 @@ if (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 16) {
 
 function run(bin, args) {
   return new Promise((resolve, reject) => {
+    const chunks = [];
     const child = spawn(process.execPath, [bin, ...args], {
       cwd: root,
-      stdio: ["ignore", "inherit", "inherit"],
       env: process.env,
+    });
+    child.stdout.on("data", (d) => {
+      chunks.push(d);
+      process.stdout.write(d);
+    });
+    child.stderr.on("data", (d) => {
+      chunks.push(d);
+      process.stderr.write(d);
     });
     child.on("error", reject);
     child.on("exit", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`${path.basename(bin)} exited ${code}`));
+      const out = Buffer.concat(chunks).toString("utf8").replace(/\s+/g, " ").slice(-400);
+      if (code === 0) resolve(out);
+      else reject(new Error(out || `${path.basename(bin)} exited ${code}`));
     });
   });
 }
@@ -53,62 +62,77 @@ if (!existsSync(nextBin)) {
   process.exit(1);
 }
 
-const dumpModule = path.join(root, "scripts", "cafe24-import-data.mjs");
-const partFiles = Array.from({ length: 10 }, (_, i) =>
-  path.join(
-    root,
-    "scripts",
-    `cafe24-import-p${String(i).padStart(2, "0")}.mjs`
-  )
-);
-const dataSql =
-  [
-    path.join(root, "scripts", "cafe24-import.sql"),
-    path.join(root, "prisma", "cafe24-import.sql"),
-    path.join(root, "prisma", "local-data.sql"),
-  ].find((candidate) => existsSync(candidate)) ?? "";
 const importScript = path.join(root, "scripts", "import-local-data.mjs");
 const importMarker = path.join(
   process.env.IMPORT_MARKER_DIR || "/app/user_data",
-  ".local-data-imported"
+  ".core-import-v3"
 );
-const hasDump =
-  Boolean(dataSql) ||
-  existsSync(dumpModule) ||
-  partFiles.some((part) => existsSync(part));
-process.env.IMPORT_DUMP_FOUND = hasDump ? "1" : "0";
-process.env.IMPORT_DUMP_NAME = existsSync(dumpModule)
-  ? "cafe24-import-data.mjs"
-  : dataSql
-    ? path.basename(dataSql)
-    : partFiles.filter((part) => existsSync(part)).length
-      ? `parts:${partFiles.filter((part) => existsSync(part)).length}`
-      : "";
+const chunkScript = path.join(root, "scripts", "import-chunks.mjs");
+const scriptsDir = path.join(root, "scripts");
+const chunkFileCount = existsSync(scriptsDir)
+  ? readdirSync(scriptsDir).filter((name) => /^import-chunk-\d+\.mjs$/.test(name))
+      .length
+  : 0;
+
+process.env.IMPORT_DUMP_FOUND = existsSync(importScript) ? "1" : "0";
+process.env.IMPORT_DUMP_NAME = "embedded-core";
+process.env.IMPORT_STATE = `chunkFiles=${chunkFileCount}`;
+console.log(
+  "startup: import script",
+  existsSync(importScript) ? "present" : "MISSING",
+  "marker",
+  existsSync(importMarker) ? "present" : "absent",
+  "chunkFiles",
+  chunkFileCount
+);
+
+if (process.env.IMPORT_LOCAL_DATA === "true") {
+  if (!existsSync(importScript)) {
+    console.error("startup: import script missing at", importScript);
+    process.env.IMPORT_STATE += ";core=missing-script";
+  } else {
+    console.log("startup: importing core settlement data before next start");
+    try {
+      await run(importScript, []);
+      console.log("startup: core import complete");
+      process.env.IMPORT_STATE += ";core=ok";
+    } catch (err) {
+      console.error("startup: core import failed", err);
+      process.env.IMPORT_STATE += `;core=fail:${String(err?.message || err).slice(0, 180)}`;
+    }
+  }
+}
+
 process.env.IMPORT_MARKER_FOUND = existsSync(importMarker) ? "1" : "0";
+try {
+  const logPath = path.join(
+    process.env.IMPORT_MARKER_DIR || "/app/user_data",
+    "import-last.json"
+  );
+  if (existsSync(logPath)) {
+    process.env.IMPORT_STATE += ";" + readFileSync(logPath, "utf8").slice(0, 300);
+  }
+} catch {
+  // ignore
+}
 
 const child = spawn(
   process.execPath,
   [nextBin, "start", "--hostname", "0.0.0.0", "--port", port],
   { cwd: root, stdio: "inherit", env: process.env }
 );
-const nextExit = new Promise((resolve) => {
-  child.on("exit", (code) => resolve(code ?? 1));
-});
 
 if (
   process.env.IMPORT_LOCAL_DATA === "true" &&
-  hasDump &&
-  existsSync(importScript)
+  existsSync(chunkScript) &&
+  existsSync(importMarker)
 ) {
-  console.log("startup: importing local settlement data");
-  try {
-    await run(process.execPath, [importScript]);
-    console.log("startup: import complete");
-  } catch (err) {
-    console.error("startup: import failed", err);
-  }
-} else if (existsSync(importMarker)) {
-  console.log("startup: local data already imported");
+  console.log("startup: importing remaining settlement chunks in background");
+  run(chunkScript, [])
+    .then(() => console.log("startup: chunk import complete"))
+    .catch((err) => console.error("startup: chunk import failed", err));
 }
 
-process.exit(await nextExit);
+process.exit(await new Promise((resolve) => {
+  child.on("exit", (code) => resolve(code ?? 1));
+}));
