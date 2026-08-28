@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { ZodError } from "zod";
 
 export function jsonOk<T>(data: T, status = 200) {
   return NextResponse.json(data, {
@@ -12,6 +13,9 @@ export function jsonError(message: string, status = 400, details?: unknown) {
 }
 
 export function handleApiError(error: unknown) {
+  if (error instanceof ZodError) {
+    return jsonError(error.issues[0]?.message ?? "입력값이 올바르지 않습니다.", 400);
+  }
   if (error instanceof Error) {
     if (error.message === "FORBIDDEN") {
       return jsonError("권한이 없습니다. 다시 로그인해주세요.", 403);

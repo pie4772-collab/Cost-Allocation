@@ -91,3 +91,31 @@ export const projectSchema = z.object({
   name: z.string().min(1),
   notes: z.string().optional(),
 });
+
+const roleNameSchema = z.enum([
+  "Admin",
+  "CostManager",
+  "AllocationManager",
+  "Approver",
+  "BillingManager",
+  "Auditor",
+  "Viewer",
+]);
+
+export const userCreateSchema = z.object({
+  email: z.string().email(),
+  name: z.string().trim().min(1),
+  password: z.string().min(8, "비밀번호는 8자 이상이어야 합니다."),
+  roles: z.array(roleNameSchema).min(1, "역할을 하나 이상 선택하세요."),
+});
+
+export const userUpdateSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  password: z
+    .string()
+    .min(8, "비밀번호는 8자 이상이어야 합니다.")
+    .optional()
+    .or(z.literal("")),
+  roles: z.array(roleNameSchema).min(1).optional(),
+  isActive: z.boolean().optional(),
+});
